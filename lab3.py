@@ -1,11 +1,10 @@
+from gensim import corpora
+
 import requests
 import re
 import nltk
-nltk.download('stopwords')
-nltk.download('wordnet')
 from nltk.stem import WordNetLemmatizer
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
 import textwrap
 import string
@@ -21,15 +20,26 @@ tokenizer = nltk.WordPunctTokenizer()
 stop_words = set(nltk.corpus.stopwords.words('english'))
 stop_words.add("im")
 stop_words.add("oh")
+stop_words.add("em")
+
 lemmatizer = WordNetLemmatizer()
 
 #Створення функції для опрацювання тексту згідно заданих умов
 def preprocess_document(text):
+    # Видалення цифр та неалфавітних символів
     text = re.sub(r'[^a-zA-Z\s]', '', text)
+
+    # Приведення тексту до нижнього регістру і видалення зайвих пробілів на початку і в кінці
     text = text.lower().strip()
+
     tokens = tokenizer.tokenize(text)
+    # Видалення стоп-слів
     filtered_tokens = [token for token in tokens if token not in stop_words]
+
+    # Лематизація
     lemmatized_tokens = [lemmatizer.lemmatize(token) for token in filtered_tokens]
+
+    # Повертаємо оброблений текст
     return ' '.join(lemmatized_tokens)
 
 # Попередня обробка тексту
@@ -39,35 +49,38 @@ processed_text = preprocess_document(book_text)
 print("Опрацьований текст :")
 console_width = 80 #обмеження ширини консолі, для зручного читання тексту
 text_lines = textwrap.wrap(processed_text, width=console_width)
-for line in text_lines[:50]:
+for line in text_lines[-30:]:
     print(line)
 
 print("\n" + "-"*50 + "\n")
 
-
-
+# Повернення тексту до початкового формату
 text = processed_text
-# Видалення тексту після "THE END"
+
+# Знаходження всіх позицій, де зустрічається "END"
 positions = [match.start() for match in re.finditer(r'\bend project\b', text)]
 
 if len(positions) >= 0:
+    # Відсікаємо текст до  "END"
     text = text[:positions[0]]
 else:
     print(" Не виявлено 'END'")
 
-# Видалення тексту до "Сhapter 1"
+# Знаходження всіх позицій, де зустрічається "CHAPTER I"
 positions = [match.start() for match in re.finditer(r'\bchapter\b', text)]
 if len(positions) >= 2:
+    # Відсікаємо текст до другого згадування "CHAPTER I"
     text = text[positions[12]:]
 else:
     print(" Не виявлено другого згадування 'CHAPTER I'")
 
-# Розділення тексту на глави
+# Розділення тексту на глави з використанням римських чисел
 chapters = re.split(r'\bchapter [ivx]+\b', text)
+# Видалення порожніх розділів та зайвих символів після розділу
 chapters = [re.sub(r'^\s*\.+\s*', '', chapter) for chapter in chapters if chapter.strip()]
 
 # Обробка кожної глави
-processed_chapters = chapters#[preprocess_document(chapter) for chapter in chapters]
+processed_chapters = [preprocess_document(chapter) for chapter in chapters]
 
 # Видалення знаків пунктуації для кожного абзацу
 for idx in range(len(processed_chapters)):
@@ -86,24 +99,27 @@ for idx, row in enumerate(tfidf_matrix):
     top_features = [feature_names[i] for i in top_indices]
     top_words[f"Chapter {idx+1}"] = top_features
 
-# Використання CountVectorizer
-vectorizer = CountVectorizer(max_df=0.90, min_df=2)
-dtm = vectorizer.fit_transform(chapters)
+# Ініціалізуйте TfidfVectorizer
+tfidf_vectorizer = TfidfVectorizer(max_df=0.95, min_df=2, stop_words='english')
 
-# LDA
-lda_model = LatentDirichletAllocation(n_components=len(chapters), random_state=42)
-lda_model.fit(dtm)
+# Побудуйте матрицю tf-idf
+tfidf_matrix = tfidf_vectorizer.fit_transform(chapters)
 
-# Функція для виведення тем з LDA
-def print_lda_topics(model, vectorizer, n_words=20):
-    words = vectorizer.get_feature_names_out()
-    for idx, topic in enumerate(model.components_):
-        print(f"Chapter {idx+1} (LDA):", [words[i] for i in topic.argsort()[-n_words:][::-1]])
+# Отримайте словник та інвертований словник для подальшої роботи з gensim
+id2word = corpora.Dictionary([ch.split() for ch in chapters])
+corpus = [id2word.doc2bow(ch.split()) for ch in chapters]
 
-print_lda_topics(lda_model, vectorizer)
-#  Порівняння з TF-IDF
-print("\nПорівняння результатів LDA і TF-IDF:")
-for idx in range(len(chapters)):
-    print(f"Chapter {idx + 1} TF-IDF: {', '.join(top_words[f'Chapter {idx + 1}'])}")
-    print(f"Chapter {idx + 1} LDA: {', '.join([vectorizer.get_feature_names_out()[i] for i in lda_model.components_[idx].argsort()[-20:][::-1]])}")
-    print("-" * 50)
+# Визначте кількість тем
+num_topics = 12  # Змініть це на бажану кількість тем
+
+# Проведіть модель LDA
+lda_model = LatentDirichletAllocation(n_components=num_topics, random_state=42)
+lda_model.fit(tfidf_matrix)
+
+# Виведіть теми та їх ключові слова
+for topic_idx, topic in enumerate(lda_model.components_):
+    print(f"Topic #{topic_idx + 1}:")
+    print("LDA:",end=" ")
+    print([tfidf_vectorizer.get_feature_names_out()[i] for i in topic.argsort()[-20:]])
+    print("TF-IDF:",end=" ")
+    print(f"{top_words[f'Chapter {topic_idx + 1}']}",end="\n\n")
